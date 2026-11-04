@@ -1,0 +1,10 @@
+/var/log/api-enhanced.log {
+    daily
+    rotate 14
+    dateext
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

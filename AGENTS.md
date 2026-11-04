@@ -49,3 +49,4 @@
 - **`docs:check` 校验的是 `public/docs/home.md`（docsify 站点）**，不是 README；脚本默认只处理该文件，换行会被统一为 `\n`、连续空行压缩到 2 行，PR 改动它后记得跑 `pnpm docs:format`。
 - **ESLint 9 flat config**：`eslint.config.js`，风格由 `eslint-plugin-prettier` 强制（2 空格缩进、单引号、分号、`endOfLine: auto`），并 `globalIgnores(['**/public/'])`——`public/` 下的前端页面不参与 lint。
 - **`pnpm-workspace.yaml` 是单包工作区**（`packages: ['.']`），并带 `allowBuilds`（core-js/es5-ext）与 `minimumReleaseAgeExclude` 白名单；改依赖安装行为时先看它。
+- **服务器部署（47.95.232.239）的 nginx `/netapi/` 反代必须保持 `proxy_buffer_size 16k`**：登录成功（`/login/qr/check` 返回 803、`/login/cellphone` 成功）时网易回大包 `Set-Cookie`，默认 4-8K 头部缓冲装不下，nginx 对浏览器回 502 并丢弃 cookie——后端日志一切正常，极具迷惑性。详见 musicVue 项目 `README.md` 踩坑记录第 1 条。

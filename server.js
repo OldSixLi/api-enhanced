@@ -261,6 +261,12 @@ async function constructServer(moduleDefs) {
   )
 
   /**
+   * 自定义路由（聚合接口：歌单批量取评论量等）
+   * 放在缓存中间件之前，避免慢接口被缓存
+   */
+  app.use('/ma', require('./router/custom'))
+
+  /**
    * Cache
    */
   app.use(cache('2 minutes', (_, res) => res.statusCode === 200))

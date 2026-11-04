@@ -1,0 +1,33 @@
+[Unit]
+Description=NeteaseCloudMusicApiEnhanced (port 9999, /ma custom router)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/app/api-enhanced
+Environment=PATH=/usr/local/node22/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PORT=9999
+Environment=HOST=127.0.0.1
+Environment=NODE_ENV=production
+Environment=TMPDIR=/app/api-enhanced/.tmp
+# 身份池大小，注册动作有风控风险，保持保守
+Environment=MA_ANON_POOL=6
+# 出口 IP 轮换周期：10 分钟
+Environment=MA_IP_ROTATE_MS=600000
+# V8 堆封顶：默认 64 位下会放到 2GB 量级，一旦评论扫描堆积就会吃满机器；128MB 足够本服务
+Environment=NODE_OPTIONS=--max-old-space-size=128
+# 内存护栏（systemd 219 只有 cgroup v1，且不认识 MemoryMax / MemorySoftLimit，这两个键是 231 才加的）
+# 硬顶用 MemoryLimit：当前实测 76MB，256M 给约 3 倍余量，只有真失控才触发 OOM
+MemoryLimit=256M
+# 软限 systemd 219 写不进去，只能启动前直接写 cgroup 文件：超软限时内核优先回收本服务 page cache，而不是去动别的服务
+# 失败不阻断启动（|| true），因为 cgroup 路径在部分内核上可能不存在
+ExecStartPre=/bin/sh -c 'echo 201326592 > /sys/fs/cgroup/memory/system.slice/api-enhanced.service/memory.soft_limit_in_bytes 2>/dev/null || true'
+# 本机 systemd 219 不支持 StandardOutput=append:，用 shell 重定向落文件
+ExecStart=/bin/sh -c 'exec /usr/local/node22/bin/node app.js >> /var/log/api-enhanced.log 2>&1'
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
