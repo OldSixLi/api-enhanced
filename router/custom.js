@@ -20,6 +20,8 @@ const CONTROL_PARAMS = [
   'ipRotate',
   'maxCommentScan',
   'cacheTtl',
+  'commentOffset',
+  'ids',
 ]
 
 /**
@@ -59,8 +61,7 @@ function buildQuery(req, extra, kind = 'mobile') {
       cookie: Object.assign({}, profile.cookie),
       ua: profile.ua,
       // 默认用定时轮换槽位的 IP；ipRotate=request 时才退化成每子请求一个随机 IP
-      realIP:
-        req.maIpMode === 'request' ? ipRotator.randomIp() : profile.ip,
+      realIP: req.maIpMode === 'request' ? ipRotator.randomIp() : profile.ip,
     },
     extra,
   )
@@ -123,6 +124,24 @@ router.all('/anon/status', (req, res) => {
 router.all('/comment/music', async (req, res) => {
   // comment_music 走 weapi，UA 用 PC 画像
   const query = buildQuery(req, {}, 'pc')
+  const musicId = Number(req.query.id)
+
+  // 与歌单详情共用同一个评论数缓存，单曲查询同样支持 cacheTtl=0 跳过缓存
+  const ttlMinutes =
+    req.query.cacheTtl === undefined || req.query.cacheTtl === ''
+      ? 30
+      : Number(req.query.cacheTtl)
+  const ttlMs =
+    Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes * 60 * 1000 : 0
+
+  if (ttlMs > 0 && Number.isFinite(musicId)) {
+    const cached = commentCache.getCachedCounts([musicId], ttlMs)
+    if (cached.has(musicId)) {
+      res.send({ total: cached.get(musicId), cacheHit: true })
+      return
+    }
+  }
+
   try {
     const ans = await _getMusicComment(query, request)
     // 匿名模式下不回传网易下发的 cookie：那是身份池的凭证，
@@ -130,11 +149,102 @@ router.all('/comment/music', async (req, res) => {
     if (req.maAuth && Array.isArray(ans.cookie) && ans.cookie.length > 0) {
       res.append('Set-Cookie', ans.cookie)
     }
-    res.status(ans.status || 200).send({ total: ans.body.total })
+    const total = ans.body && ans.body.total
+    if (typeof total === 'number' && Number.isFinite(musicId)) {
+      try {
+        commentCache.saveCounts([[musicId, total]])
+      } catch (error) {
+        logger.error('[/ma/comment/music] 写入缓存失败: ' + error.message)
+      }
+    }
+    res.status(ans.status || 200).send({ total })
   } catch (error) {
     logger.error('[/ma/comment/music] ' + error.message)
     res.status(500).send({ total: 0 })
   }
+})
+
+/**
+ * 批量查询歌曲评论量（用于每日推荐这类没有歌单 ID 的曲目列表）
+ * GET /ma/songs/comments?ids=1,2,3&maxCommentScan=120&commentOffset=0
+ * @returns {{ comments: Record<number, number>, scannedComments, totalTracks, scanOffset, cacheHit }}
+ */
+router.all('/songs/comments', async (req, res) => {
+  const ids = String(req.query.ids || '')
+    .split(',')
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item) && item > 0)
+
+  if (ids.length === 0) {
+    res.send({
+      comments: {},
+      scannedComments: 0,
+      totalTracks: 0,
+      scanOffset: 0,
+    })
+    return
+  }
+
+  const maxCommentScan =
+    Number(req.query.maxCommentScan) > 0
+      ? Number(req.query.maxCommentScan)
+      : ids.length
+  const commentOffset = Math.max(0, Number(req.query.commentOffset) || 0)
+  const scanIds = ids.slice(commentOffset, commentOffset + maxCommentScan)
+
+  const ttlMinutes =
+    req.query.cacheTtl === undefined || req.query.cacheTtl === ''
+      ? 30
+      : Number(req.query.cacheTtl)
+  const ttlMs =
+    Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes * 60 * 1000 : 0
+
+  const comments = {}
+  let cacheHit = 0
+
+  try {
+    // 1) 先查缓存，只请求未命中的曲目
+    let toFetch = scanIds
+    if (ttlMs > 0 && scanIds.length > 0) {
+      const cached = commentCache.getCachedCounts(scanIds, ttlMs)
+      cacheHit = cached.size
+      for (const [id, count] of cached) comments[id] = count
+      toFetch = scanIds.filter((id) => !cached.has(id))
+    }
+
+    // 2) 未命中的并发请求并回写缓存（与歌单详情同一套节奏控制）
+    if (toFetch.length > 0) {
+      const fetched = await getMusicListComment(
+        100,
+        toFetch.map((id) => ({ id })),
+        req,
+      )
+      const toSave = []
+      for (const [id, count] of fetched) {
+        if (count >= 0) {
+          comments[id] = count
+          toSave.push([id, count])
+        }
+      }
+      if (toSave.length > 0) {
+        try {
+          commentCache.saveCounts(toSave)
+        } catch (error) {
+          logger.error('[/ma/songs/comments] 写入缓存失败: ' + error.message)
+        }
+      }
+    }
+  } catch (error) {
+    logger.error('[/ma/songs/comments] ' + error.message)
+  }
+
+  res.send({
+    comments,
+    scannedComments: scanIds.length,
+    totalTracks: ids.length,
+    scanOffset: commentOffset,
+    cacheHit,
+  })
 })
 
 /**
@@ -161,7 +271,8 @@ router.all('/playlist/detail', async (req, res) => {
  * @param {*} req
  */
 async function handleMusicList(musicListRes, req) {
-  const playlist = (musicListRes && musicListRes.body && musicListRes.body.playlist) || {}
+  const playlist =
+    (musicListRes && musicListRes.body && musicListRes.body.playlist) || {}
   const trackIds = playlist.trackIds || []
   const afterMusicListArr = []
 
@@ -175,7 +286,7 @@ async function handleMusicList(musicListRes, req) {
   const commentOffset = Math.max(0, Number(req.query.commentOffset) || 0)
   const commentScanList = trackIds.slice(
     commentOffset,
-    commentOffset + maxCommentScan
+    commentOffset + maxCommentScan,
   )
 
   // 缓存有效期（分钟），默认 30；cacheTtl=0 强制跳过缓存、重新抓取
@@ -362,7 +473,9 @@ function getComment(musicId, req) {
         // 拿不到数字时返回 -1（失败），与真实的 0 条评论区分开，
         // 调用方据此决定是否写入缓存。
         const totalCount =
-          ans && ans.body && ans.body.data ? ans.body.data.totalCount : undefined
+          ans && ans.body && ans.body.data
+            ? ans.body.data.totalCount
+            : undefined
         if (typeof totalCount === 'number') {
           resolve([musicId, totalCount])
         } else {

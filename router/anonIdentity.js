@@ -32,9 +32,8 @@ const POOL_FILE = path.join(DATA_DIR, 'anon-identities.json')
 // 池子大小：注册动作本身有风险，宁少勿多。
 // 实测每次注册约 350ms，但短时间大量注册会被网易当成异常行为，
 // 所以这里默认只留 6 个，并发 1，且每次之间强制间隔。
-const POOL_SIZE = Number(process.env.MA_ANON_POOL) > 0
-  ? Number(process.env.MA_ANON_POOL)
-  : 6
+const POOL_SIZE =
+  Number(process.env.MA_ANON_POOL) > 0 ? Number(process.env.MA_ANON_POOL) : 6
 const REGISTER_ATTEMPTS = 2
 // 两次注册之间的间隔（毫秒），避免形成连续注册的机器行为
 const REGISTER_GAP_MS = 2500
@@ -132,7 +131,11 @@ function savePoolToDisk() {
     fs.mkdirSync(DATA_DIR, { recursive: true })
     fs.writeFileSync(
       POOL_FILE,
-      JSON.stringify(pool.map((x) => ({ musicA: x.musicA })), null, 0),
+      JSON.stringify(
+        pool.map((x) => ({ musicA: x.musicA })),
+        null,
+        0,
+      ),
     )
   } catch (error) {
     logger.warn('[anonIdentity] 保存身份池失败: ' + error.message)
@@ -182,7 +185,9 @@ async function buildPool() {
 
     const need = POOL_SIZE - existing.length
     if (need <= 0) {
-      logger.info(`[anonIdentity] 身份池已就绪（复用本地 ${existing.length} 个）`)
+      logger.info(
+        `[anonIdentity] 身份池已就绪（复用本地 ${existing.length} 个）`,
+      )
       return
     }
 
